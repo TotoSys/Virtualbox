@@ -259,7 +259,7 @@ static DECLCALLBACK(VBOXSTRICTRC) geforce3Ti500MmioRead(PPDMDEVINS pDevIns, void
         switch (off)
         {
             case GEFORCE3TI500_REG_PMC + 0x000: /* BOOT_0 */
-                u32Value = 0x02010001; /* Fake architecture and revision */
+                u32Value = 0x020200A5; /* GeForce 3 Ti 500 identification */
                 break;
 
             case GEFORCE3TI500_REG_PMC + 0x100: /* INTR_0 */
