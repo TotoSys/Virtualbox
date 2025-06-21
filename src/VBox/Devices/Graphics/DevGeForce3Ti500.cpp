@@ -170,103 +170,21 @@ static DECLCALLBACK(VBOXSTRICTRC) geforce3Ti500MmioWrite(PPDMDEVINS pDevIns, voi
             return VINF_SUCCESS;
     }
 
-    /* Basic register handling - just store the value for now */
-    if (off < sizeof(pThis->au32Regs))
+    /* Use comprehensive register write function */
+    if (cb == 1)
+        geforce3Ti500RegisterWrite8(pThis, (uint32_t)off, (uint8_t)u32Value);
+    else if (cb == 4)
+        geforce3Ti500RegisterWrite32(pThis, (uint32_t)off, u32Value);
+    else
     {
-        uint32_t uReg = (uint32_t)(off / 4);
-        pThis->au32Regs[uReg] = u32Value;
-
-        /* Handle special registers */
-        switch (off)
-        {
-            case GEFORCE3TI500_REG_PMC + 0x140: /* INTR_EN_0 */
-                pThis->u32IrqEnable = u32Value;
-                Log(("GeForce3Ti500: Interrupt enable set to 0x%08x\n", u32Value));
-                break;
-
-            case GEFORCE3TI500_REG_PMC + 0x100: /* INTR_0 */
-                /* Clear interrupt status bits */
-                pThis->u32IrqStatus &= ~u32Value;
-                if (!pThis->u32IrqStatus)
-                    PDMDevHlpPCISetIrq(pDevIns, 0, 0);
-                Log(("GeForce3Ti500: Interrupt status cleared, new status: 0x%08x\n", pThis->u32IrqStatus));
-                break;
-
-            case GEFORCE3TI500_REG_GRAPH_STATUS:
-                pThis->u32GraphStatus = u32Value;
-                /* Process graphics commands if engine is enabled */
-                if (u32Value & 0x02) /* Engine enable bit */
-                {
-                    PGEFORCE3TI500STATECC pThisCC = PDMDEVINS_2_DATA_CC(pDevIns, PGEFORCE3TI500STATECC);
-                    geforce3Ti500R3ProcessGraphicsCmds(pThis, pThisCC);
-                }
-                Log(("GeForce3Ti500: Graphics status set to 0x%08x\n", u32Value));
-                break;
-
-            case GEFORCE3TI500_REG_D3D_COMMAND: /* D3D command register */
-                /* Handle D3D command: format expected is class|method|param */
-                {
-                    PGEFORCE3TI500STATECC pThisCC = PDMDEVINS_2_DATA_CC(pDevIns, PGEFORCE3TI500STATECC);
-                    uint32_t cls = (u32Value >> 16) & 0xFF;
-                    uint32_t method = u32Value & 0xFFFF;
-                    uint32_t chid = 0; /* Default channel */
-                    
-                    if (cls == GEFORCE3TI500_D3D_CLASS)
-                    {
-                        Log2(("GeForce3Ti500: D3D command received - class=0x%02x, method=0x%03x\n", cls, method));
-                        /* For now, we'll need the parameter in a separate write */
-                        /* This is a simplified interface - real hardware would use FIFO */
-                    }
-                }
-                break;
-
-            case GEFORCE3TI500_REG_D3D_PARAM: /* D3D parameter register */
-                /* Handle D3D parameter for the last command */
-                {
-                    PGEFORCE3TI500STATECC pThisCC = PDMDEVINS_2_DATA_CC(pDevIns, PGEFORCE3TI500STATECC);
-                    uint32_t lastCommand = pThis->au32Regs[GEFORCE3TI500_REG_D3D_COMMAND / 4];
-                    uint32_t cls = (lastCommand >> 16) & 0xFF;
-                    uint32_t method = lastCommand & 0xFFFF;
-                    uint32_t chid = 0; /* Default channel */
-                    
-                    if (cls == GEFORCE3TI500_D3D_CLASS)
-                    {
-                        geforce3Ti500R3ProcessD3DCommand(pThis, pThisCC, chid, method, u32Value);
-                    }
-                }
-                break;
-
-            case GEFORCE3TI500_REG_CRTC_CONFIG:
-                pThis->u32CrtcConfig = u32Value;
-                /* Extract display mode from configuration */
-                geforce3Ti500UpdateDisplayMode(pThis, u32Value);
-                Log(("GeForce3Ti500: CRTC config set to 0x%08x\n", u32Value));
-                break;
-
-            case GEFORCE3TI500_REG_DAC_PALETTE_IDX:
-                pThis->u32PaletteIndex = u32Value & 0xFF;
-                Log2(("GeForce3Ti500: Palette index set to %u\n", pThis->u32PaletteIndex));
-                break;
-
-            case GEFORCE3TI500_REG_DAC_PALETTE_DATA:
-                if (pThis->u32PaletteIndex < 256)
-                {
-                    uint32_t idx = pThis->u32PaletteIndex * 3;
-                    if (idx + 2 < sizeof(pThis->abPalette))
-                    {
-                        pThis->abPalette[idx]     = (u32Value >> 16) & 0xFF; /* Red */
-                        pThis->abPalette[idx + 1] = (u32Value >> 8) & 0xFF;  /* Green */
-                        pThis->abPalette[idx + 2] = u32Value & 0xFF;         /* Blue */
-                    }
-                    pThis->u32PaletteIndex = (pThis->u32PaletteIndex + 1) & 0xFF;
-                }
-                Log2(("GeForce3Ti500: Palette data written: 0x%08x\n", u32Value));
-                break;
-
-            default:
-                /* Other registers are just stored */
-                break;
-        }
+        /* Handle 2-byte writes by converting to 4-byte */
+        uint32_t aligned_off = (uint32_t)off & ~3;
+        uint32_t current = geforce3Ti500RegisterRead32(pThis, aligned_off);
+        if ((off & 3) == 0)
+            current = (current & 0xFFFF0000) | u32Value;
+        else
+            current = (current & 0x0000FFFF) | (u32Value << 16);
+        geforce3Ti500RegisterWrite32(pThis, aligned_off, current);
     }
 
     return VINF_SUCCESS;
@@ -282,56 +200,20 @@ static DECLCALLBACK(VBOXSTRICTRC) geforce3Ti500MmioRead(PPDMDEVINS pDevIns, void
 
     uint32_t u32Value = 0;
 
-    /* Basic register handling */
-    if (off < sizeof(pThis->au32Regs))
+    /* Use comprehensive register read function */
+    if (cb == 1)
+        u32Value = geforce3Ti500RegisterRead8(pThis, (uint32_t)off);
+    else if (cb == 4)
+        u32Value = geforce3Ti500RegisterRead32(pThis, (uint32_t)off);
+    else
     {
-        uint32_t uReg = (uint32_t)(off / 4);
-        u32Value = pThis->au32Regs[uReg];
-
-        /* Handle special registers */
-        switch (off)
-        {
-            case GEFORCE3TI500_REG_PMC + 0x000: /* BOOT_0 */
-                u32Value = 0x020200A5; /* GeForce 3 Ti 500 identification */
-                break;
-
-            case GEFORCE3TI500_REG_PMC + 0x100: /* INTR_0 */
-                u32Value = pThis->u32IrqStatus;
-                break;
-
-            case GEFORCE3TI500_REG_PMC + 0x140: /* INTR_EN_0 */
-                u32Value = pThis->u32IrqEnable;
-                break;
-
-            case GEFORCE3TI500_REG_GRAPH_STATUS:
-                u32Value = pThis->u32GraphStatus;
-                break;
-
-            case GEFORCE3TI500_REG_CRTC_CONFIG:
-                u32Value = pThis->u32CrtcConfig;
-                break;
-
-            case GEFORCE3TI500_REG_DAC_PALETTE_IDX:
-                u32Value = pThis->u32PaletteIndex;
-                break;
-
-            case GEFORCE3TI500_REG_DAC_PALETTE_DATA:
-                if (pThis->u32PaletteIndex < 256)
-                {
-                    uint32_t idx = pThis->u32PaletteIndex * 3;
-                    if (idx + 2 < sizeof(pThis->abPalette))
-                    {
-                        u32Value = (pThis->abPalette[idx] << 16) |      /* Red */
-                                   (pThis->abPalette[idx + 1] << 8) |   /* Green */
-                                   pThis->abPalette[idx + 2];          /* Blue */
-                    }
-                }
-                break;
-
-            default:
-                /* Use stored register value */
-                break;
-        }
+        /* Handle 2-byte reads by extracting from 4-byte read */
+        uint32_t aligned_off = (uint32_t)off & ~3;
+        uint32_t full_value = geforce3Ti500RegisterRead32(pThis, aligned_off);
+        if ((off & 3) == 0)
+            u32Value = full_value & 0xFFFF;
+        else
+            u32Value = (full_value >> 16) & 0xFFFF;
     }
 
     /* Return value based on access width */
@@ -713,6 +595,606 @@ static int geforce3Ti500R3ProcessD3DCommand(PGEFORCE3TI500STATE pThis, PGEFORCE3
     return geforce3Ti500R3ExecuteD3D(pThis, pThisCC, chid, method, param);
 }
 
+#ifdef IN_RING3
+
+/*********************************************************************************************************************************
+*   Comprehensive Register Access Functions                                                                                      *
+*********************************************************************************************************************************/
+
+/**
+ * Read 8-bit register value.
+ */
+uint8_t geforce3Ti500RegisterRead8(PGEFORCE3TI500STATE pThis, uint32_t address)
+{
+    uint32_t value = geforce3Ti500RegisterRead32(pThis, address & ~3);
+    return (uint8_t)(value >> ((address & 3) * 8));
+}
+
+/**
+ * Read 32-bit register value with comprehensive handling.
+ */
+uint32_t geforce3Ti500RegisterRead32(PGEFORCE3TI500STATE pThis, uint32_t address)
+{
+    uint32_t value = 0;
+    
+    /* PMC registers */
+    if (address >= GEFORCE3TI500_REG_PMC && address < GEFORCE3TI500_REG_PMC + 0x1000)
+    {
+        switch (address)
+        {
+            case GEFORCE3TI500_PMC_BOOT_0:
+                value = 0x020200A5; /* GeForce 3 Ti 500 identification */
+                break;
+            case GEFORCE3TI500_PMC_INTR_0:
+                value = pThis->u32IrqStatus;
+                break;
+            case GEFORCE3TI500_PMC_INTR_EN_0:
+                value = pThis->u32IrqEnable;
+                break;
+            case GEFORCE3TI500_PMC_ENABLE:
+                value = pThis->mc_enable;
+                break;
+            default:
+                value = 0;
+                break;
+        }
+    }
+    /* PBUS registers */
+    else if (address >= GEFORCE3TI500_REG_PBUS && address < GEFORCE3TI500_REG_PBUS + 0x1000)
+    {
+        switch (address)
+        {
+            case GEFORCE3TI500_PBUS_INTR_0:
+                value = pThis->bus_intr;
+                break;
+            case GEFORCE3TI500_PBUS_INTR_EN_0:
+                value = pThis->bus_intr_en;
+                break;
+            default:
+                value = 0;
+                break;
+        }
+    }
+    /* PFIFO registers */
+    else if (address >= GEFORCE3TI500_REG_PFIFO && address < GEFORCE3TI500_REG_PFIFO + 0x2000)
+    {
+        switch (address)
+        {
+            case GEFORCE3TI500_PFIFO_INTR_0:
+                value = pThis->fifo_intr;
+                break;
+            case GEFORCE3TI500_PFIFO_INTR_EN_0:
+                value = pThis->fifo_intr_en;
+                break;
+            case GEFORCE3TI500_PFIFO_RAMHT:
+                value = pThis->fifo_ramht;
+                break;
+            case GEFORCE3TI500_PFIFO_RAMFC:
+                value = pThis->fifo_ramfc;
+                break;
+            case GEFORCE3TI500_PFIFO_RAMRO:
+                value = pThis->fifo_ramro;
+                break;
+            case GEFORCE3TI500_PFIFO_MODE:
+                value = pThis->fifo_mode;
+                break;
+            case GEFORCE3TI500_PFIFO_CACHE1_PUSH1:
+                value = pThis->fifo_cache1_push1;
+                break;
+            case GEFORCE3TI500_PFIFO_CACHE1_PUT:
+                value = pThis->fifo_cache1_put;
+                break;
+            case GEFORCE3TI500_PFIFO_CACHE1_DMA_PUSH:
+                value = pThis->fifo_cache1_dma_push;
+                break;
+            case GEFORCE3TI500_PFIFO_CACHE1_DMA_INSTANCE:
+                value = pThis->fifo_cache1_dma_instance;
+                break;
+            case GEFORCE3TI500_PFIFO_CACHE1_DMA_PUT:
+                value = pThis->fifo_cache1_dma_put;
+                break;
+            case GEFORCE3TI500_PFIFO_CACHE1_DMA_GET:
+                value = pThis->fifo_cache1_dma_get;
+                break;
+            case GEFORCE3TI500_PFIFO_CACHE1_REF_CNT:
+                value = pThis->fifo_cache1_ref_cnt;
+                break;
+            case GEFORCE3TI500_PFIFO_CACHE1_PULL0:
+                value = pThis->fifo_cache1_pull0;
+                break;
+            case GEFORCE3TI500_PFIFO_CACHE1_SEMAPHORE:
+                value = pThis->fifo_cache1_semaphore;
+                break;
+            case GEFORCE3TI500_PFIFO_CACHE1_GET:
+                value = pThis->fifo_cache1_get;
+                break;
+            case GEFORCE3TI500_PFIFO_GRCTX_INSTANCE:
+                value = pThis->fifo_grctx_instance;
+                break;
+            default:
+                value = 0;
+                break;
+        }
+    }
+    /* PTIMER registers */
+    else if (address >= GEFORCE3TI500_REG_PTIMER && address < GEFORCE3TI500_REG_PTIMER + 0x1000)
+    {
+        switch (address)
+        {
+            case GEFORCE3TI500_PTIMER_INTR_0:
+                value = pThis->timer_intr;
+                break;
+            case GEFORCE3TI500_PTIMER_INTR_EN_0:
+                value = pThis->timer_intr_en;
+                break;
+            case GEFORCE3TI500_PTIMER_NUMERATOR:
+                value = pThis->timer_num;
+                break;
+            case GEFORCE3TI500_PTIMER_DENOMINATOR:
+                value = pThis->timer_den;
+                break;
+            case GEFORCE3TI500_PTIMER_TIME_0:
+                value = (uint32_t)geforce3Ti500GetCurrentTime();
+                break;
+            case GEFORCE3TI500_PTIMER_TIME_1:
+                value = (uint32_t)(geforce3Ti500GetCurrentTime() >> 32);
+                break;
+            case GEFORCE3TI500_PTIMER_ALARM_0:
+                value = pThis->timer_alarm;
+                break;
+            default:
+                value = 0;
+                break;
+        }
+    }
+    /* PGRAPH registers */
+    else if (address >= GEFORCE3TI500_REG_PGRAPH && address < GEFORCE3TI500_REG_PGRAPH + 0x200000)
+    {
+        switch (address)
+        {
+            case GEFORCE3TI500_PGRAPH_INTR:
+                value = pThis->graph_intr;
+                break;
+            case GEFORCE3TI500_PGRAPH_NSOURCE:
+                value = pThis->graph_nsource;
+                break;
+            case GEFORCE3TI500_PGRAPH_INTR_EN:
+                value = pThis->graph_intr_en;
+                break;
+            case GEFORCE3TI500_PGRAPH_CTX_SWITCH1:
+                value = pThis->graph_ctx_switch1;
+                break;
+            case GEFORCE3TI500_PGRAPH_CTX_SWITCH2:
+                value = pThis->graph_ctx_switch2;
+                break;
+            case GEFORCE3TI500_PGRAPH_CTX_SWITCH4:
+                value = pThis->graph_ctx_switch4;
+                break;
+            case GEFORCE3TI500_PGRAPH_CTXCTL_CUR:
+                value = pThis->graph_ctxctl_cur;
+                break;
+            case GEFORCE3TI500_PGRAPH_STATUS:
+                value = pThis->graph_status;
+                break;
+            case GEFORCE3TI500_REG_GRAPH_STATUS:
+                value = pThis->u32GraphStatus;
+                break;
+            case GEFORCE3TI500_REG_GRAPH_TRAPPED_ADDR:
+                value = pThis->graph_trapped_addr;
+                break;
+            case GEFORCE3TI500_REG_GRAPH_TRAPPED_DATA:
+                value = pThis->graph_trapped_data;
+                break;
+            case GEFORCE3TI500_PGRAPH_NOTIFY:
+                value = pThis->graph_notify;
+                break;
+            case GEFORCE3TI500_PGRAPH_FIFO:
+                value = pThis->graph_fifo;
+                break;
+            case GEFORCE3TI500_PGRAPH_CHANNEL_CTX_TABLE:
+                value = pThis->graph_channel_ctx_table;
+                break;
+            default:
+                value = 0;
+                break;
+        }
+    }
+    /* PCRTC registers */
+    else if (address >= GEFORCE3TI500_REG_PCRTC && address < GEFORCE3TI500_REG_PCRTC + 0x80000)
+    {
+        switch (address)
+        {
+            case GEFORCE3TI500_PCRTC_INTR_0:
+                value = pThis->crtc_intr;
+                break;
+            case GEFORCE3TI500_PCRTC_INTR_EN_0:
+                value = pThis->crtc_intr_en;
+                break;
+            case GEFORCE3TI500_PCRTC_START:
+            case GEFORCE3TI500_REG_CRTC_START:
+                value = pThis->crtc_start;
+                break;
+            case GEFORCE3TI500_PCRTC_CONFIG:
+            case GEFORCE3TI500_REG_CRTC_CONFIG:
+                value = pThis->crtc_config;
+                break;
+            case GEFORCE3TI500_PCRTC_CURSOR_CONFIG:
+                value = pThis->crtc_cursor_config;
+                break;
+            default:
+                value = 0;
+                break;
+        }
+    }
+    /* PRAMDAC registers */
+    else if (address >= GEFORCE3TI500_REG_PRAMDAC && address < GEFORCE3TI500_REG_PRAMDAC + 0x40000)
+    {
+        switch (address)
+        {
+            case GEFORCE3TI500_REG_DAC_PALETTE_IDX:
+                value = pThis->u32PaletteIndex;
+                break;
+            case GEFORCE3TI500_REG_DAC_PALETTE_DATA:
+                if (pThis->u32PaletteIndex < 256)
+                {
+                    uint32_t idx = pThis->u32PaletteIndex * 3;
+                    if (idx + 2 < sizeof(pThis->abPalette))
+                    {
+                        value = (pThis->abPalette[idx] << 16) |      /* Red */
+                                (pThis->abPalette[idx + 1] << 8) |   /* Green */
+                                pThis->abPalette[idx + 2];          /* Blue */
+                    }
+                }
+                break;
+            case GEFORCE3TI500_PRAMDAC_CU_START_POS:
+                value = pThis->ramdac_cu_start_pos;
+                break;
+            case GEFORCE3TI500_PRAMDAC_VPLL:
+                value = pThis->ramdac_vpll;
+                break;
+            case GEFORCE3TI500_PRAMDAC_VPLL_B:
+                value = pThis->ramdac_vpll_b;
+                break;
+            case GEFORCE3TI500_PRAMDAC_PLL_SELECT:
+                value = pThis->ramdac_pll_select;
+                break;
+            case GEFORCE3TI500_PRAMDAC_GENERAL_CONTROL:
+                value = pThis->ramdac_general_control;
+                break;
+            default:
+                value = 0;
+                break;
+        }
+    }
+    else
+    {
+        /* Fall back to register array */
+        if (address < sizeof(pThis->au32Regs))
+        {
+            uint32_t uReg = address / 4;
+            value = pThis->au32Regs[uReg];
+        }
+    }
+    
+    Log2(("GeForce3Ti500: RegisterRead32(0x%08x) = 0x%08x\n", address, value));
+    return value;
+}
+
+/**
+ * Write 8-bit register value.
+ */
+void geforce3Ti500RegisterWrite8(PGEFORCE3TI500STATE pThis, uint32_t address, uint8_t value)
+{
+    uint32_t aligned_addr = address & ~3;
+    uint32_t current = geforce3Ti500RegisterRead32(pThis, aligned_addr);
+    uint32_t shift = (address & 3) * 8;
+    uint32_t mask = 0xFF << shift;
+    uint32_t new_value = (current & ~mask) | ((uint32_t)value << shift);
+    geforce3Ti500RegisterWrite32(pThis, aligned_addr, new_value);
+}
+
+/**
+ * Write 32-bit register value with comprehensive handling.
+ */
+void geforce3Ti500RegisterWrite32(PGEFORCE3TI500STATE pThis, uint32_t address, uint32_t value)
+{
+    Log2(("GeForce3Ti500: RegisterWrite32(0x%08x, 0x%08x)\n", address, value));
+    
+    /* PMC registers */
+    if (address >= GEFORCE3TI500_REG_PMC && address < GEFORCE3TI500_REG_PMC + 0x1000)
+    {
+        switch (address)
+        {
+            case GEFORCE3TI500_PMC_INTR_0:
+                /* Clear interrupt bits */
+                pThis->u32IrqStatus &= ~value;
+                geforce3Ti500UpdateIrqLevel(pThis);
+                break;
+            case GEFORCE3TI500_PMC_INTR_EN_0:
+                pThis->u32IrqEnable = value;
+                pThis->mc_intr_en = value;
+                geforce3Ti500UpdateIrqLevel(pThis);
+                break;
+            case GEFORCE3TI500_PMC_ENABLE:
+                pThis->mc_enable = value;
+                break;
+        }
+    }
+    /* PBUS registers */
+    else if (address >= GEFORCE3TI500_REG_PBUS && address < GEFORCE3TI500_REG_PBUS + 0x1000)
+    {
+        switch (address)
+        {
+            case GEFORCE3TI500_PBUS_INTR_0:
+                pThis->bus_intr &= ~value;
+                break;
+            case GEFORCE3TI500_PBUS_INTR_EN_0:
+                pThis->bus_intr_en = value;
+                break;
+        }
+    }
+    /* PFIFO registers */
+    else if (address >= GEFORCE3TI500_REG_PFIFO && address < GEFORCE3TI500_REG_PFIFO + 0x2000)
+    {
+        switch (address)
+        {
+            case GEFORCE3TI500_PFIFO_INTR_0:
+                pThis->fifo_intr &= ~value;
+                break;
+            case GEFORCE3TI500_PFIFO_INTR_EN_0:
+                pThis->fifo_intr_en = value;
+                break;
+            case GEFORCE3TI500_PFIFO_RAMHT:
+                pThis->fifo_ramht = value;
+                break;
+            case GEFORCE3TI500_PFIFO_RAMFC:
+                pThis->fifo_ramfc = value;
+                break;
+            case GEFORCE3TI500_PFIFO_RAMRO:
+                pThis->fifo_ramro = value;
+                break;
+            case GEFORCE3TI500_PFIFO_MODE:
+                pThis->fifo_mode = value;
+                break;
+            case GEFORCE3TI500_PFIFO_CACHE1_PUSH1:
+                pThis->fifo_cache1_push1 = value;
+                break;
+            case GEFORCE3TI500_PFIFO_CACHE1_PUT:
+                pThis->fifo_cache1_put = value;
+                break;
+            case GEFORCE3TI500_PFIFO_CACHE1_DMA_PUSH:
+                pThis->fifo_cache1_dma_push = value;
+                break;
+            case GEFORCE3TI500_PFIFO_CACHE1_DMA_INSTANCE:
+                pThis->fifo_cache1_dma_instance = value;
+                break;
+            case GEFORCE3TI500_PFIFO_CACHE1_DMA_PUT:
+                pThis->fifo_cache1_dma_put = value;
+                break;
+            case GEFORCE3TI500_PFIFO_CACHE1_DMA_GET:
+                pThis->fifo_cache1_dma_get = value;
+                break;
+            case GEFORCE3TI500_PFIFO_CACHE1_REF_CNT:
+                pThis->fifo_cache1_ref_cnt = value;
+                break;
+            case GEFORCE3TI500_PFIFO_CACHE1_PULL0:
+                pThis->fifo_cache1_pull0 = value;
+                break;
+            case GEFORCE3TI500_PFIFO_CACHE1_SEMAPHORE:
+                pThis->fifo_cache1_semaphore = value;
+                break;
+            case GEFORCE3TI500_PFIFO_CACHE1_GET:
+                pThis->fifo_cache1_get = value;
+                break;
+            case GEFORCE3TI500_PFIFO_GRCTX_INSTANCE:
+                pThis->fifo_grctx_instance = value;
+                break;
+        }
+    }
+    /* PTIMER registers */
+    else if (address >= GEFORCE3TI500_REG_PTIMER && address < GEFORCE3TI500_REG_PTIMER + 0x1000)
+    {
+        switch (address)
+        {
+            case GEFORCE3TI500_PTIMER_INTR_0:
+                pThis->timer_intr &= ~value;
+                break;
+            case GEFORCE3TI500_PTIMER_INTR_EN_0:
+                pThis->timer_intr_en = value;
+                break;
+            case GEFORCE3TI500_PTIMER_NUMERATOR:
+                pThis->timer_num = value;
+                break;
+            case GEFORCE3TI500_PTIMER_DENOMINATOR:
+                pThis->timer_den = value;
+                break;
+            case GEFORCE3TI500_PTIMER_ALARM_0:
+                pThis->timer_alarm = value;
+                break;
+        }
+    }
+    /* PGRAPH registers */
+    else if (address >= GEFORCE3TI500_REG_PGRAPH && address < GEFORCE3TI500_REG_PGRAPH + 0x200000)
+    {
+        switch (address)
+        {
+            case GEFORCE3TI500_PGRAPH_INTR:
+                pThis->graph_intr &= ~value;
+                break;
+            case GEFORCE3TI500_PGRAPH_NSOURCE:
+                pThis->graph_nsource = value;
+                break;
+            case GEFORCE3TI500_PGRAPH_INTR_EN:
+                pThis->graph_intr_en = value;
+                break;
+            case GEFORCE3TI500_PGRAPH_CTX_SWITCH1:
+                pThis->graph_ctx_switch1 = value;
+                break;
+            case GEFORCE3TI500_PGRAPH_CTX_SWITCH2:
+                pThis->graph_ctx_switch2 = value;
+                break;
+            case GEFORCE3TI500_PGRAPH_CTX_SWITCH4:
+                pThis->graph_ctx_switch4 = value;
+                break;
+            case GEFORCE3TI500_PGRAPH_CTXCTL_CUR:
+                pThis->graph_ctxctl_cur = value;
+                break;
+            case GEFORCE3TI500_PGRAPH_STATUS:
+                pThis->graph_status = value;
+                break;
+            case GEFORCE3TI500_REG_GRAPH_STATUS:
+                pThis->u32GraphStatus = value;
+                break;
+            case GEFORCE3TI500_REG_GRAPH_TRAPPED_ADDR:
+                pThis->graph_trapped_addr = value;
+                break;
+            case GEFORCE3TI500_REG_GRAPH_TRAPPED_DATA:
+                pThis->graph_trapped_data = value;
+                break;
+            case GEFORCE3TI500_PGRAPH_NOTIFY:
+                pThis->graph_notify = value;
+                break;
+            case GEFORCE3TI500_PGRAPH_FIFO:
+                pThis->graph_fifo = value;
+                break;
+            case GEFORCE3TI500_PGRAPH_CHANNEL_CTX_TABLE:
+                pThis->graph_channel_ctx_table = value;
+                break;
+        }
+    }
+    /* PCRTC registers */
+    else if (address >= GEFORCE3TI500_REG_PCRTC && address < GEFORCE3TI500_REG_PCRTC + 0x80000)
+    {
+        switch (address)
+        {
+            case GEFORCE3TI500_PCRTC_INTR_0:
+                pThis->crtc_intr &= ~value;
+                break;
+            case GEFORCE3TI500_PCRTC_INTR_EN_0:
+                pThis->crtc_intr_en = value;
+                break;
+            case GEFORCE3TI500_PCRTC_START:
+            case GEFORCE3TI500_REG_CRTC_START:
+                pThis->crtc_start = value;
+                break;
+            case GEFORCE3TI500_PCRTC_CONFIG:
+            case GEFORCE3TI500_REG_CRTC_CONFIG:
+                pThis->crtc_config = value;
+                pThis->u32CrtcConfig = value;
+                geforce3Ti500UpdateDisplayMode(pThis, value);
+                break;
+            case GEFORCE3TI500_PCRTC_CURSOR_CONFIG:
+                pThis->crtc_cursor_config = value;
+                break;
+        }
+    }
+    /* PRAMDAC registers */
+    else if (address >= GEFORCE3TI500_REG_PRAMDAC && address < GEFORCE3TI500_REG_PRAMDAC + 0x40000)
+    {
+        switch (address)
+        {
+            case GEFORCE3TI500_REG_DAC_PALETTE_IDX:
+                pThis->u32PaletteIndex = value & 0xFF;
+                break;
+            case GEFORCE3TI500_REG_DAC_PALETTE_DATA:
+                if (pThis->u32PaletteIndex < 256)
+                {
+                    uint32_t idx = pThis->u32PaletteIndex * 3;
+                    if (idx + 2 < sizeof(pThis->abPalette))
+                    {
+                        pThis->abPalette[idx]     = (value >> 16) & 0xFF; /* Red */
+                        pThis->abPalette[idx + 1] = (value >> 8) & 0xFF;  /* Green */
+                        pThis->abPalette[idx + 2] = value & 0xFF;         /* Blue */
+                    }
+                    pThis->u32PaletteIndex = (pThis->u32PaletteIndex + 1) & 0xFF;
+                }
+                break;
+            case GEFORCE3TI500_PRAMDAC_CU_START_POS:
+                pThis->ramdac_cu_start_pos = value;
+                break;
+            case GEFORCE3TI500_PRAMDAC_VPLL:
+                pThis->ramdac_vpll = value;
+                break;
+            case GEFORCE3TI500_PRAMDAC_VPLL_B:
+                pThis->ramdac_vpll_b = value;
+                break;
+            case GEFORCE3TI500_PRAMDAC_PLL_SELECT:
+                pThis->ramdac_pll_select = value;
+                break;
+            case GEFORCE3TI500_PRAMDAC_GENERAL_CONTROL:
+                pThis->ramdac_general_control = value;
+                break;
+        }
+    }
+    else
+    {
+        /* Store in register array as fallback */
+        if (address < sizeof(pThis->au32Regs))
+        {
+            uint32_t uReg = address / 4;
+            pThis->au32Regs[uReg] = value;
+        }
+    }
+}
+
+/*********************************************************************************************************************************
+*   Timing and Interrupt Functions                                                                                               *
+*********************************************************************************************************************************/
+
+/**
+ * Get current time in nanoseconds.
+ */
+uint64_t geforce3Ti500GetCurrentTime(void)
+{
+    return RTTimeNanoTS();
+}
+
+/**
+ * Update interrupt level based on current state.
+ */
+void geforce3Ti500UpdateIrqLevel(PGEFORCE3TI500STATE pThis)
+{
+    uint32_t intr = geforce3Ti500GetMcIntr(pThis);
+    bool level = (intr & pThis->mc_intr_en) != 0;
+    geforce3Ti500SetIrqLevel(pThis, level);
+}
+
+/**
+ * Get master control interrupt status.
+ */
+uint32_t geforce3Ti500GetMcIntr(PGEFORCE3TI500STATE pThis)
+{
+    uint32_t intr = 0;
+    
+    if (pThis->bus_intr & pThis->bus_intr_en)
+        intr |= 0x10000000;
+    if (pThis->fifo_intr & pThis->fifo_intr_en)
+        intr |= 0x00000100;
+    if (pThis->graph_intr & pThis->graph_intr_en)
+        intr |= 0x00001000;
+    if (pThis->crtc_intr & pThis->crtc_intr_en)
+        intr |= 0x01000000;
+    if (pThis->timer_intr & pThis->timer_intr_en)
+        intr |= 0x00100000;
+    
+    return intr;
+}
+
+/**
+ * Set interrupt level.
+ */
+void geforce3Ti500SetIrqLevel(PGEFORCE3TI500STATE pThis, bool level)
+{
+    /* Note: This would need a device instance to call PDMDevHlpPCISetIrq */
+    /* For now, just store the level */
+    if (level)
+        pThis->u32IrqStatus |= 0x00000001;
+    else
+        pThis->u32IrqStatus &= ~0x00000001;
+}
+
+#endif /* IN_RING3 */
+
 /**
  * @interface_method_impl{PDMIBASE,pfnQueryInterface}
  */
@@ -794,17 +1276,94 @@ static DECLCALLBACK(void) geforce3Ti500R3Reset(PPDMDEVINS pDevIns)
     pThis->u32PaletteIndex = 0;
     RT_ZERO(pThis->abPalette);
     
-    /* Reset D3D acceleration state */
-    pThis->u32D3DSemaphoreObj = 0;
-    pThis->u32D3DSemaphoreOffset = 0;
-    pThis->u32D3DClipHorizontal = 0;
-    pThis->u32D3DClipVertical = 0;
-    pThis->u32D3DSurfaceFormat = 0;
-    pThis->u32D3DSurfacePitch = 0;
-    pThis->u32D3DSurfaceColorOffset = 0;
-    pThis->u32D3DColorClearValue = 0;
-    pThis->u32D3DClearSurface = 0;
-    pThis->u32D3DColorBytes = 4; /* Default to 32-bit color */
+    /* Initialize comprehensive register state */
+    pThis->mc_intr_en = 0;
+    pThis->mc_enable = 0;
+    pThis->bus_intr = 0;
+    pThis->bus_intr_en = 0;
+    
+    /* FIFO state */
+    pThis->fifo_intr = 0;
+    pThis->fifo_intr_en = 0;
+    pThis->fifo_ramht = 0x03000100;  /* Default hash table setup */
+    pThis->fifo_ramfc = 0x11000100;  /* Default FIFO context setup */
+    pThis->fifo_ramro = 0x13000100;  /* Default runout setup */
+    pThis->fifo_mode = 0;
+    pThis->fifo_cache1_push1 = 0;
+    pThis->fifo_cache1_put = 0;
+    pThis->fifo_cache1_dma_push = 0;
+    pThis->fifo_cache1_dma_instance = 0;
+    pThis->fifo_cache1_dma_put = 0;
+    pThis->fifo_cache1_dma_get = 0;
+    pThis->fifo_cache1_ref_cnt = 0;
+    pThis->fifo_cache1_pull0 = 0;
+    pThis->fifo_cache1_semaphore = 0;
+    pThis->fifo_cache1_get = 0;
+    pThis->fifo_grctx_instance = 0;
+    RT_ZERO(pThis->fifo_cache1_method);
+    RT_ZERO(pThis->fifo_cache1_data);
+    
+    /* Memory mapping */
+    pThis->rma_addr = 0;
+    
+    /* Timer state */
+    pThis->timer_intr = 0;
+    pThis->timer_intr_en = 0;
+    pThis->timer_num = 8; /* Default numerator */
+    pThis->timer_den = 3; /* Default denominator */
+    pThis->timer_inittime1 = geforce3Ti500GetCurrentTime();
+    pThis->timer_inittime2 = pThis->timer_inittime1;
+    pThis->timer_alarm = 0;
+    
+    /* Hardware straps */
+    pThis->straps0_primary = 0x10000022; /* GeForce 3 Ti 500 straps */
+    pThis->straps0_primary_original = pThis->straps0_primary;
+    
+    /* Graphics engine state */
+    pThis->graph_intr = 0;
+    pThis->graph_nsource = 0;
+    pThis->graph_intr_en = 0;
+    pThis->graph_ctx_switch1 = 0;
+    pThis->graph_ctx_switch2 = 0;
+    pThis->graph_ctx_switch4 = 0;
+    pThis->graph_ctxctl_cur = 0;
+    pThis->graph_status = 0;
+    pThis->graph_trapped_addr = 0;
+    pThis->graph_trapped_data = 0;
+    pThis->graph_notify = 0;
+    pThis->graph_fifo = 0;
+    pThis->graph_channel_ctx_table = 0;
+    
+    /* Display controller state */
+    pThis->crtc_intr = 0;
+    pThis->crtc_intr_en = 0;
+    pThis->crtc_start = 0;
+    pThis->crtc_config = 0;
+    pThis->crtc_cursor_offset = 0;
+    pThis->crtc_cursor_config = 0;
+    
+    /* RAMDAC state */
+    pThis->ramdac_cu_start_pos = 0;
+    pThis->ramdac_vpll = 0x00100100; /* Default PLL settings */
+    pThis->ramdac_vpll_b = 0x00100100;
+    pThis->ramdac_pll_select = 0;
+    pThis->ramdac_general_control = 0;
+    
+    /* Initialize all channels */
+    for (uint32_t i = 0; i < GEFORCE3TI500_CHANNEL_COUNT; i++)
+    {
+        RT_ZERO(pThis->chs[i]);
+        for (uint32_t j = 0; j < GEFORCE3TI500_SUBCHANNEL_COUNT; j++)
+        {
+            pThis->chs[i].schs[j].object = 0;
+            pThis->chs[i].schs[j].engine = 0;
+            pThis->chs[i].schs[j].notifier = 0;
+        }
+        pThis->chs[i].d3d_color_bytes = 4; /* Default to 32-bit color */
+    }
+    
+    /* Hardware acceleration state */
+    pThis->acquire_active = false;
     
     /* Set default display mode (1024x768x32) */
     pThis->cxDisplay = 1024;
