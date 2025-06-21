@@ -100,6 +100,10 @@
 #define GEFORCE3TI500_REG_GRAPH_TRAPPED_DATA 0x400708
 #define GEFORCE3TI500_REG_GRAPH_SURFACE     0x400710
 
+/* D3D command interface registers */
+#define GEFORCE3TI500_REG_D3D_COMMAND       0x400800  /* D3D command register */
+#define GEFORCE3TI500_REG_D3D_PARAM         0x400804  /* D3D parameter register */
+
 /* Display controller registers */
 #define GEFORCE3TI500_REG_CRTC_START        0x600800
 #define GEFORCE3TI500_REG_CRTC_CONFIG       0x600804
@@ -111,6 +115,19 @@
 #define GEFORCE3TI500_REG_DAC_PIXEL_MASK    0x680000
 #define GEFORCE3TI500_REG_DAC_PALETTE_IDX   0x680008
 #define GEFORCE3TI500_REG_DAC_PALETTE_DATA  0x68000C
+
+/* D3D command class and methods */
+#define GEFORCE3TI500_D3D_CLASS             0x97
+#define GEFORCE3TI500_D3D_METHOD_SEMAPHORE_OBJ       0x069
+#define GEFORCE3TI500_D3D_METHOD_CLIP_HORIZONTAL     0x080
+#define GEFORCE3TI500_D3D_METHOD_CLIP_VERTICAL       0x081
+#define GEFORCE3TI500_D3D_METHOD_SURFACE_FORMAT      0x082
+#define GEFORCE3TI500_D3D_METHOD_SURFACE_PITCH       0x083
+#define GEFORCE3TI500_D3D_METHOD_SURFACE_COLOR_OFFSET 0x084
+#define GEFORCE3TI500_D3D_METHOD_SEMAPHORE_OFFSET    0x75b
+#define GEFORCE3TI500_D3D_METHOD_SEMAPHORE_WRITE     0x75c
+#define GEFORCE3TI500_D3D_METHOD_COLOR_CLEAR_VALUE   0x764
+#define GEFORCE3TI500_D3D_METHOD_CLEAR_SURFACE       0x765
 /** @} */
 
 /** @name Interrupt Status Flags
@@ -169,6 +186,18 @@ typedef struct GEFORCE3TI500STATE
     uint32_t                u32PaletteIndex;
     uint8_t                 abPalette[768]; /* 256 colors * 3 components */
 
+    /** D3D acceleration state. */
+    uint32_t                u32D3DSemaphoreObj;
+    uint32_t                u32D3DSemaphoreOffset;
+    uint32_t                u32D3DClipHorizontal;
+    uint32_t                u32D3DClipVertical;
+    uint32_t                u32D3DSurfaceFormat;
+    uint32_t                u32D3DSurfacePitch;
+    uint32_t                u32D3DSurfaceColorOffset;
+    uint32_t                u32D3DColorClearValue;
+    uint32_t                u32D3DClearSurface;
+    uint32_t                u32D3DColorBytes;
+
     /** The PCI device. */
     PDMPCIDEV               PciDev;
     
@@ -218,6 +247,12 @@ typedef GEFORCE3TI500STATECC *PGEFORCE3TI500STATECC;
 #define GEFORCE3TI500_MODE_1024X768X32      6
 #define GEFORCE3TI500_MODE_1280X1024X32     7
 /** @} */
+
+#ifdef IN_RING3
+/* D3D command processing function declaration */
+int geforce3Ti500R3ProcessD3DCommand(PGEFORCE3TI500STATE pThis, PGEFORCE3TI500STATECC pThisCC,
+                                     uint32_t chid, uint32_t method, uint32_t param);
+#endif
 
 /** @} */
 
