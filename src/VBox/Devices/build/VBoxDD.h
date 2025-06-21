@@ -113,6 +113,7 @@ extern const PDMDEVREG g_DeviceLPC;
 extern const PDMDEVREG g_DeviceVirtualKD;
 #endif
 extern const PDMDEVREG g_DeviceQemuFwCfg;
+extern const PDMDEVREG g_DeviceGeForce3Ti500;
 #ifdef VBOX_WITH_TPM
 extern const PDMDEVREG g_DeviceTpm;
 extern const PDMDEVREG g_DeviceTpmPpi;
