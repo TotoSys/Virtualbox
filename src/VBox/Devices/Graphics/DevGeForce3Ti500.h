@@ -93,6 +93,24 @@
 #define GEFORCE3TI500_REG_PCRTC             0x600000
 #define GEFORCE3TI500_REG_PRAMDAC           0x680000
 #define GEFORCE3TI500_REG_PRMDIO            0x6C0000
+
+/* Graphics engine registers */
+#define GEFORCE3TI500_REG_GRAPH_STATUS      0x400700
+#define GEFORCE3TI500_REG_GRAPH_TRAPPED_ADDR 0x400704
+#define GEFORCE3TI500_REG_GRAPH_TRAPPED_DATA 0x400708
+#define GEFORCE3TI500_REG_GRAPH_SURFACE     0x400710
+
+/* Display controller registers */
+#define GEFORCE3TI500_REG_CRTC_START        0x600800
+#define GEFORCE3TI500_REG_CRTC_CONFIG       0x600804
+#define GEFORCE3TI500_REG_CRTC_PIXEL        0x600808
+#define GEFORCE3TI500_REG_CRTC_H_SYNC       0x600830
+#define GEFORCE3TI500_REG_CRTC_V_SYNC       0x600834
+
+/* RAMDAC registers */
+#define GEFORCE3TI500_REG_DAC_PIXEL_MASK    0x680000
+#define GEFORCE3TI500_REG_DAC_PALETTE_IDX   0x680008
+#define GEFORCE3TI500_REG_DAC_PALETTE_DATA  0x68000C
 /** @} */
 
 /** @name Interrupt Status Flags
@@ -137,6 +155,19 @@ typedef struct GEFORCE3TI500STATE
     
     /** Device capabilities flags. */
     uint32_t                fCapabilities;
+
+    /** Current video mode. */
+    uint32_t                uCurrentMode;
+    
+    /** Graphics engine state. */
+    uint32_t                u32GraphStatus;
+    
+    /** Display configuration. */
+    uint32_t                u32CrtcConfig;
+    
+    /** Palette state. */
+    uint32_t                u32PaletteIndex;
+    uint8_t                 abPalette[768]; /* 256 colors * 3 components */
 
     /** The PCI device. */
     PDMPCIDEV               PciDev;

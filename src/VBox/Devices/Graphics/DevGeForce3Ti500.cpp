@@ -81,6 +81,74 @@
 *   Internal Functions                                                                                                           *
 *********************************************************************************************************************************/
 
+/* Forward declarations */
+static int geforce3Ti500R3ProcessGraphicsCmds(PGEFORCE3TI500STATE pThis, PGEFORCE3TI500STATECC pThisCC);
+static int geforce3Ti500R3Setup2DContext(PGEFORCE3TI500STATE pThis);
+
+/**
+ * Updates the display mode based on CRTC configuration.
+ */
+static void geforce3Ti500UpdateDisplayMode(PGEFORCE3TI500STATE pThis, uint32_t u32CrtcConfig)
+{
+    /* Extract display parameters from CRTC config (simplified) */
+    if (u32CrtcConfig & 0x80000000) /* Enable bit */
+    {
+        /* Decode resolution from config - this is a simplified approach */
+        uint32_t mode = (u32CrtcConfig >> 16) & 0xFF;
+        switch (mode)
+        {
+            case 0: /* 640x480x16 */
+                pThis->cxDisplay = 640;
+                pThis->cyDisplay = 480;
+                pThis->cBitsPerPixel = 16;
+                pThis->uCurrentMode = GEFORCE3TI500_MODE_640X480X16;
+                break;
+            case 1: /* 800x600x16 */
+                pThis->cxDisplay = 800;
+                pThis->cyDisplay = 600;
+                pThis->cBitsPerPixel = 16;
+                pThis->uCurrentMode = GEFORCE3TI500_MODE_800X600X16;
+                break;
+            case 2: /* 1024x768x16 */
+                pThis->cxDisplay = 1024;
+                pThis->cyDisplay = 768;
+                pThis->cBitsPerPixel = 16;
+                pThis->uCurrentMode = GEFORCE3TI500_MODE_1024X768X16;
+                break;
+            case 4: /* 640x480x32 */
+                pThis->cxDisplay = 640;
+                pThis->cyDisplay = 480;
+                pThis->cBitsPerPixel = 32;
+                pThis->uCurrentMode = GEFORCE3TI500_MODE_640X480X32;
+                break;
+            case 5: /* 800x600x32 */
+                pThis->cxDisplay = 800;
+                pThis->cyDisplay = 600;
+                pThis->cBitsPerPixel = 32;
+                pThis->uCurrentMode = GEFORCE3TI500_MODE_800X600X32;
+                break;
+            case 6: /* 1024x768x32 */
+                pThis->cxDisplay = 1024;
+                pThis->cyDisplay = 768;
+                pThis->cBitsPerPixel = 32;
+                pThis->uCurrentMode = GEFORCE3TI500_MODE_1024X768X32;
+                break;
+            case 7: /* 1280x1024x32 */
+                pThis->cxDisplay = 1280;
+                pThis->cyDisplay = 1024;
+                pThis->cBitsPerPixel = 32;
+                pThis->uCurrentMode = GEFORCE3TI500_MODE_1280X1024X32;
+                break;
+            default:
+                /* Keep current mode for unknown configurations */
+                break;
+        }
+        
+        Log(("GeForce3Ti500: Display mode updated to %ux%ux%u (mode %u)\n",
+             pThis->cxDisplay, pThis->cyDisplay, pThis->cBitsPerPixel, pThis->uCurrentMode));
+    }
+}
+
 /**
  * @callback_method_impl{FNIOMMMIONEWWRITE}
  */
@@ -124,6 +192,44 @@ static DECLCALLBACK(VBOXSTRICTRC) geforce3Ti500MmioWrite(PPDMDEVINS pDevIns, voi
                 Log(("GeForce3Ti500: Interrupt status cleared, new status: 0x%08x\n", pThis->u32IrqStatus));
                 break;
 
+            case GEFORCE3TI500_REG_GRAPH_STATUS:
+                pThis->u32GraphStatus = u32Value;
+                /* Process graphics commands if engine is enabled */
+                if (u32Value & 0x02) /* Engine enable bit */
+                {
+                    PGEFORCE3TI500STATECC pThisCC = PDMDEVINS_2_DATA_CC(pDevIns, PGEFORCE3TI500STATECC);
+                    geforce3Ti500R3ProcessGraphicsCmds(pThis, pThisCC);
+                }
+                Log(("GeForce3Ti500: Graphics status set to 0x%08x\n", u32Value));
+                break;
+
+            case GEFORCE3TI500_REG_CRTC_CONFIG:
+                pThis->u32CrtcConfig = u32Value;
+                /* Extract display mode from configuration */
+                geforce3Ti500UpdateDisplayMode(pThis, u32Value);
+                Log(("GeForce3Ti500: CRTC config set to 0x%08x\n", u32Value));
+                break;
+
+            case GEFORCE3TI500_REG_DAC_PALETTE_IDX:
+                pThis->u32PaletteIndex = u32Value & 0xFF;
+                Log2(("GeForce3Ti500: Palette index set to %u\n", pThis->u32PaletteIndex));
+                break;
+
+            case GEFORCE3TI500_REG_DAC_PALETTE_DATA:
+                if (pThis->u32PaletteIndex < 256)
+                {
+                    uint32_t idx = pThis->u32PaletteIndex * 3;
+                    if (idx + 2 < sizeof(pThis->abPalette))
+                    {
+                        pThis->abPalette[idx]     = (u32Value >> 16) & 0xFF; /* Red */
+                        pThis->abPalette[idx + 1] = (u32Value >> 8) & 0xFF;  /* Green */
+                        pThis->abPalette[idx + 2] = u32Value & 0xFF;         /* Blue */
+                    }
+                    pThis->u32PaletteIndex = (pThis->u32PaletteIndex + 1) & 0xFF;
+                }
+                Log2(("GeForce3Ti500: Palette data written: 0x%08x\n", u32Value));
+                break;
+
             default:
                 /* Other registers are just stored */
                 break;
@@ -162,6 +268,31 @@ static DECLCALLBACK(VBOXSTRICTRC) geforce3Ti500MmioRead(PPDMDEVINS pDevIns, void
 
             case GEFORCE3TI500_REG_PMC + 0x140: /* INTR_EN_0 */
                 u32Value = pThis->u32IrqEnable;
+                break;
+
+            case GEFORCE3TI500_REG_GRAPH_STATUS:
+                u32Value = pThis->u32GraphStatus;
+                break;
+
+            case GEFORCE3TI500_REG_CRTC_CONFIG:
+                u32Value = pThis->u32CrtcConfig;
+                break;
+
+            case GEFORCE3TI500_REG_DAC_PALETTE_IDX:
+                u32Value = pThis->u32PaletteIndex;
+                break;
+
+            case GEFORCE3TI500_REG_DAC_PALETTE_DATA:
+                if (pThis->u32PaletteIndex < 256)
+                {
+                    uint32_t idx = pThis->u32PaletteIndex * 3;
+                    if (idx + 2 < sizeof(pThis->abPalette))
+                    {
+                        u32Value = (pThis->abPalette[idx] << 16) |      /* Red */
+                                   (pThis->abPalette[idx + 1] << 8) |   /* Green */
+                                   pThis->abPalette[idx + 2];          /* Blue */
+                    }
+                }
                 break;
 
             default:
@@ -347,6 +478,77 @@ static DECLCALLBACK(void) geforce3Ti500R3PortSetRenderVRAM(PPDMIDISPLAYPORT pInt
     Log2(("geforce3Ti500R3PortSetRenderVRAM: fRender=%RTbool\n", fRender));
 }
 
+/* -=-=-=-=-=- GeForce 3 Ti 500 2D Acceleration (stub implementations) -=-=-=-=-=- */
+
+/**
+ * Performs a simple rectangle fill operation (2D acceleration stub).
+ * This is a basic implementation that can be extended for actual hardware acceleration.
+ */
+static int geforce3Ti500R3RectFill(PGEFORCE3TI500STATE pThis, PGEFORCE3TI500STATECC pThisCC,
+                                   uint32_t x, uint32_t y, uint32_t cx, uint32_t cy, uint32_t color)
+{
+    RT_NOREF(pThis, x, y, cx, cy, color);
+    
+    if (!pThisCC->pbVRAM)
+        return VINF_SUCCESS;
+
+    /* Basic software fallback for rectangle fill */
+    Log2(("GeForce3Ti500: Rectangle fill %ux%u at (%u,%u) color=0x%08x\n", cx, cy, x, y, color));
+    
+    /* This would normally program the 2D engine, but for now we just log */
+    
+    return VINF_SUCCESS;
+}
+
+/**
+ * Performs a simple bit block transfer operation (2D acceleration stub).
+ */
+static int geforce3Ti500R3BitBlt(PGEFORCE3TI500STATE pThis, PGEFORCE3TI500STATECC pThisCC,
+                                 uint32_t xSrc, uint32_t ySrc, uint32_t xDst, uint32_t yDst,
+                                 uint32_t cx, uint32_t cy)
+{
+    RT_NOREF(pThis, xSrc, ySrc, xDst, yDst, cx, cy);
+    
+    if (!pThisCC->pbVRAM)
+        return VINF_SUCCESS;
+
+    /* Basic software fallback for bit blit */
+    Log2(("GeForce3Ti500: BitBlt %ux%u from (%u,%u) to (%u,%u)\n", cx, cy, xSrc, ySrc, xDst, yDst));
+    
+    /* This would normally program the 2D engine, but for now we just log */
+    
+    return VINF_SUCCESS;
+}
+
+/**
+ * Sets up 2D acceleration context (stub).
+ */
+static int geforce3Ti500R3Setup2DContext(PGEFORCE3TI500STATE pThis)
+{
+    Log(("GeForce3Ti500: Setting up 2D acceleration context\n"));
+    
+    /* Initialize 2D engine state */
+    pThis->u32GraphStatus |= 0x01; /* Mark 2D engine as idle */
+    
+    return VINF_SUCCESS;
+}
+
+/**
+ * Processes graphics commands from FIFO (stub).
+ */
+static int geforce3Ti500R3ProcessGraphicsCmds(PGEFORCE3TI500STATE pThis, PGEFORCE3TI500STATECC pThisCC)
+{
+    RT_NOREF(pThisCC);
+    
+    Log2(("GeForce3Ti500: Processing graphics commands\n"));
+    
+    /* This would normally process commands from the graphics FIFO */
+    /* For now, just mark the graphics engine as idle */
+    pThis->u32GraphStatus |= 0x01;
+    
+    return VINF_SUCCESS;
+}
+
 /**
  * @interface_method_impl{PDMIBASE,pfnQueryInterface}
  */
@@ -420,13 +622,25 @@ static DECLCALLBACK(void) geforce3Ti500R3Reset(PPDMDEVINS pDevIns)
     pThis->u32IrqEnable = 0;
     pThis->u32IrqStatus = 0;
     
+    /* Reset graphics engine state */
+    pThis->u32GraphStatus = 0;
+    pThis->u32CrtcConfig = 0;
+    
+    /* Reset palette state */
+    pThis->u32PaletteIndex = 0;
+    RT_ZERO(pThis->abPalette);
+    
     /* Set default display mode (1024x768x32) */
     pThis->cxDisplay = 1024;
     pThis->cyDisplay = 768;
     pThis->cBitsPerPixel = 32;
+    pThis->uCurrentMode = GEFORCE3TI500_MODE_1024X768X32;
     
     /* Set capabilities */
     pThis->fCapabilities = GEFORCE3TI500_CAP_2D_ACCEL | GEFORCE3TI500_CAP_3D_ACCEL;
+
+    /* Initialize 2D acceleration context */
+    geforce3Ti500R3Setup2DContext(pThis);
 
     Log(("GeForce3Ti500: Reset complete - Default mode: %ux%ux%u\n", 
          pThis->cxDisplay, pThis->cyDisplay, pThis->cBitsPerPixel));
